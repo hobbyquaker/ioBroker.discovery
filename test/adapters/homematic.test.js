@@ -243,8 +243,26 @@ describe('hm-rpc on openccu-lite', () => {
     let network;
     afterEach(() => network?.restore());
 
-    it('proposes HmIP-RF and BidCos-RF in openccu-lite mode when no interface can be seen', async () => {
-        network = stubNetwork({ system: liteSystem() });
+    /** the one proposal for the system, as it is expected */
+    function proposal(id, add, text = PAIRING_HINT, extra = {}) {
+        return {
+            _id: `system.adapter.hm-rpc.${id}`,
+            common: { name: 'hm-rpc', title: `HomeMatic openccu-lite (${IP})` },
+            native: {
+                daemon: 'openccu-lite',
+                homematicAddress: IP,
+                homematicPort: 443,
+                useHttps: true,
+                type: 'xml',
+                ...extra,
+            },
+            comment: { add: [add], text },
+        };
+    }
+
+    it('proposes one instance in openccu-lite mode for every interface the system names', async () => {
+        const info = { ...VERSION, interfaces: ['BidCos-RF', 'HmIP-RF', 'VirtualDevices'] };
+        network = stubNetwork({ system: liteSystem(info) });
         const options = freshOptions();
         const { err, found, calls } = await detect(hmRpc, options);
 
@@ -252,63 +270,32 @@ describe('hm-rpc on openccu-lite', () => {
         assert.strictEqual(found, true);
         assert.strictEqual(calls, 1);
         assert.deepStrictEqual(options.newInstances, [
-            {
-                _id: 'system.adapter.hm-rpc.0',
-                common: { name: 'hm-rpc', title: `HomeMatic HmIP-RF (openccu-lite, ${IP})` },
-                native: {
-                    daemon: 'openccu-lite',
-                    homematicAddress: IP,
-                    homematicPort: 443,
-                    useHttps: true,
-                    type: 'xml',
-                    liteInterface: 'HmIP-RF',
-                },
-                comment: { add: [`HmIP-RF (openccu-lite, ${IP})`], text: PAIRING_HINT },
-            },
-            {
-                _id: 'system.adapter.hm-rpc.1',
-                common: { name: 'hm-rpc', title: `HomeMatic BidCos-RF (openccu-lite, ${IP})` },
-                native: {
-                    daemon: 'openccu-lite',
-                    homematicAddress: IP,
-                    homematicPort: 443,
-                    useHttps: true,
-                    type: 'xml',
-                    liteInterface: 'BidCos-RF',
-                },
-                comment: { add: [`BidCos-RF (openccu-lite, ${IP})`], text: PAIRING_HINT },
-            },
+            proposal(0, `BidCos-RF, HmIP-RF, VirtualDevices (openccu-lite, ${IP})`),
         ]);
-        assert.deepStrictEqual(hmRpc.DEFAULT_LITE_INTERFACES, ['HmIP-RF', 'BidCos-RF']);
         assert.strictEqual(hmRpc.LITE_DAEMON, 'openccu-lite');
     });
 
-    it('proposes no init-based instance when classic RPC is switched on - the open ports name the interfaces', async () => {
+    it('proposes one instance for a system that does not name its interfaces', async () => {
+        network = stubNetwork({ system: liteSystem() });
+        const options = freshOptions();
+        const { found } = await detect(hmRpc, options);
+
+        assert.strictEqual(found, true);
+        assert.deepStrictEqual(options.newInstances, [proposal(0, `openccu-lite (${IP})`)]);
+    });
+
+    it('proposes no init-based instance when classic RPC is switched on', async () => {
         network = stubNetwork({ open: [2000, 2001, 8701, 2010], system: liteSystem() });
         const options = freshOptions();
         const { found } = await detect(hmRpc, options);
 
         assert.strictEqual(found, true);
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['BidCos-Wired', 'BidCos-RF', 'HmIP-RF'],
-        );
-        for (const proposal of options.newInstances) {
-            assert.strictEqual(proposal.native.daemon, 'openccu-lite');
-            assert.strictEqual(proposal.native.port, undefined, 'no callback port: there is no init');
-            assert.strictEqual(proposal.native.adapterAddress, undefined);
-        }
-    });
-
-    it('takes only the interfaces whose port answered', async () => {
-        network = stubNetwork({ open: [2010], system: liteSystem() });
-        const options = freshOptions();
-        await detect(hmRpc, options);
-
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['HmIP-RF'],
-        );
+        assert.strictEqual(options.newInstances.length, 1);
+        const [only] = options.newInstances;
+        assert.strictEqual(only.native.daemon, 'openccu-lite');
+        assert.strictEqual(only.native.port, undefined, 'no callback port: there is no init');
+        assert.strictEqual(only.native.adapterAddress, undefined);
+        assert.strictEqual(only.native.liteInterface, undefined, 'no interface choice: the instance serves all');
     });
 
     it('fills in plain HTTP where the system answered without the redirect', async () => {
@@ -326,10 +313,7 @@ describe('hm-rpc on openccu-lite', () => {
         const options = freshOptions();
         await detect(hmRpc, options);
 
-        assert.strictEqual(options.newInstances.length, 2);
-        for (const proposal of options.newInstances) {
-            assert.strictEqual(proposal.comment.text, NO_PAIRING_HINT);
-        }
+        assert.deepStrictEqual(options.newInstances, [proposal(0, `openccu-lite (${IP})`, NO_PAIRING_HINT)]);
     });
 
     it('proposes for a system from before the capabilities were in the answer', async () => {
@@ -338,7 +322,7 @@ describe('hm-rpc on openccu-lite', () => {
         const { found } = await detect(hmRpc, options);
 
         assert.strictEqual(found, true);
-        assert.strictEqual(options.newInstances.length, 2);
+        assert.strictEqual(options.newInstances.length, 1);
         assert.strictEqual(options.newInstances[0].comment.text, PAIRING_HINT);
     });
 
@@ -355,24 +339,6 @@ describe('hm-rpc on openccu-lite', () => {
         ]);
     });
 
-    it('proposes exactly the interfaces the system names in its version answer', async () => {
-        const info = { ...VERSION, interfaces: ['BidCos-RF', 'HmIP-RF', 'VirtualDevices'] };
-        // the classic ports say something else - the system's own list wins
-        network = stubNetwork({ open: [2000, 2010], system: liteSystem(info) });
-        const options = freshOptions();
-        const { found } = await detect(hmRpc, options);
-
-        assert.strictEqual(found, true);
-        assert.deepStrictEqual(
-            options.newInstances.map(i => [i.common.title, i.native.liteInterface, i.native.daemon]),
-            [
-                [`HomeMatic BidCos-RF (openccu-lite, ${IP})`, 'BidCos-RF', 'openccu-lite'],
-                [`HomeMatic HmIP-RF (openccu-lite, ${IP})`, 'HmIP-RF', 'openccu-lite'],
-                [`HomeMatic VirtualDevices (openccu-lite, ${IP})`, 'VirtualDevices', 'openccu-lite'],
-            ],
-        );
-    });
-
     it('proposes nothing for a system that names no interface', async () => {
         network = stubNetwork({ open: [2010], system: liteSystem({ ...VERSION, interfaces: [] }) });
         const options = freshOptions();
@@ -380,85 +346,35 @@ describe('hm-rpc on openccu-lite', () => {
 
         assert.strictEqual(found, false);
         assert.deepStrictEqual(options.newInstances, []);
+        assert.deepStrictEqual(options.debugMessages, [`openccu-lite at ${IP} runs no interface`]);
     });
 
-    it('takes a classic heating-group instance as covering VirtualDevices', async () => {
-        network = stubNetwork({ system: liteSystem({ ...VERSION, interfaces: ['HmIP-RF', 'VirtualDevices'] }) });
-        const options = freshOptions([
-            instance(0, { homematicAddress: IP, homematicPort: 9292, daemon: 'virtual-devices' }),
+    it('proposes nothing when an instance in openccu-lite mode serves the system, by address or by name', async () => {
+        network = stubNetwork({ system: liteSystem() });
+        // one set up for a single interface by an earlier build serves the whole system from now on
+        let options = freshOptions([
+            instance(0, { daemon: 'openccu-lite', homematicAddress: IP, liteInterface: 'HmIP-RF' }),
         ]);
-        await detect(hmRpc, options);
+        let result = await detect(hmRpc, options);
+        assert.strictEqual(result.found, false);
+        assert.deepStrictEqual(options.newInstances, []);
 
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['HmIP-RF'],
-        );
+        options = freshOptions([instance(0, { daemon: 'openccu-lite', homematicAddress: 'lite.local' })]);
+        result = await detect(hmRpc, options, { _addr: IP, _name: 'lite.local' });
+        assert.strictEqual(result.found, false);
     });
 
-    it('proposes an interface hm-rpc has no classic daemon for, whatever classic instances exist', async () => {
-        network = stubNetwork({ system: liteSystem({ ...VERSION, interfaces: ['Future-IF'] }) });
-        const options = freshOptions([instance(0, { homematicAddress: IP, homematicPort: 2010, daemon: 'HMIP' })]);
-        await detect(hmRpc, options);
-
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['Future-IF'],
-        );
-    });
-
-    it('proposes no interface twice - an instance in openccu-lite mode covers it', async () => {
+    it('is not put off by classic instances for the system or instances of other systems', async () => {
         network = stubNetwork({ system: liteSystem() });
         const options = freshOptions([
-            instance(0, { daemon: 'openccu-lite', homematicAddress: IP, liteInterface: 'HmIP-RF' }),
+            instance(0, { daemon: 'openccu-lite', homematicAddress: '192.168.1.99' }),
+            instance(1, { homematicAddress: IP, homematicPort: 2010, daemon: 'HMIP' }),
+            instance(2, { homematicAddress: IP, homematicPort: 9292, daemon: 'virtual-devices' }),
         ]);
         const { found } = await detect(hmRpc, options);
 
         assert.strictEqual(found, true);
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['BidCos-RF'],
-        );
-        assert.strictEqual(options.newInstances[0]._id, 'system.adapter.hm-rpc.1');
-    });
-
-    it('proposes no interface twice - a classic instance for the same daemon covers it too', async () => {
-        network = stubNetwork({ system: liteSystem() });
-        const options = freshOptions([
-            instance(0, { homematicAddress: 'lite.local', homematicPort: 2001, daemon: 'rfd' }),
-        ]);
-        await detect(hmRpc, options, { _addr: IP, _name: 'lite.local' });
-
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['HmIP-RF'],
-        );
-    });
-
-    it('is not put off by instances of other systems or other interfaces', async () => {
-        network = stubNetwork({ system: liteSystem() });
-        const options = freshOptions([
-            instance(0, { daemon: 'openccu-lite', homematicAddress: '192.168.1.99', liteInterface: 'HmIP-RF' }),
-            instance(1, { daemon: 'openccu-lite', homematicAddress: IP, liteInterface: 'BidCos-Wired' }),
-            instance(2, { homematicAddress: IP, homematicPort: 2000, daemon: 'hs485d' }),
-        ]);
-        await detect(hmRpc, options);
-
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['HmIP-RF', 'BidCos-RF'],
-        );
-    });
-
-    it('reports no find when every interface is covered already', async () => {
-        network = stubNetwork({ system: liteSystem() });
-        const options = freshOptions([
-            instance(0, { daemon: 'openccu-lite', homematicAddress: IP, liteInterface: 'HmIP-RF' }),
-            instance(1, { daemon: 'openccu-lite', homematicAddress: IP, liteInterface: 'BidCos-RF' }),
-        ]);
-        const { found } = await detect(hmRpc, options);
-
-        assert.strictEqual(found, false);
-        assert.deepStrictEqual(options.newInstances, []);
+        assert.deepStrictEqual(options.newInstances, [proposal(3, `openccu-lite (${IP})`)]);
     });
 
     it('waits for the slowest classic port before it decides', async () => {
@@ -467,10 +383,8 @@ describe('hm-rpc on openccu-lite', () => {
         const { calls } = await detect(hmRpc, options);
 
         assert.strictEqual(calls, 1);
-        assert.deepStrictEqual(
-            options.newInstances.map(i => i.native.liteInterface),
-            ['HmIP-RF'],
-        );
+        assert.strictEqual(options.newInstances.length, 1);
+        assert.strictEqual(options.newInstances[0].native.daemon, 'openccu-lite');
     });
 });
 
@@ -560,9 +474,10 @@ describe('hm-rega and hm-rpc, in any order', () => {
         assert.strictEqual(rega.calls, 1);
         assert.deepStrictEqual(proposed(options), []);
 
+        // the classic instances left from the CCU this was cannot reach it: one openccu-lite instance
         const rpc = await detect(hmRpc, options);
-        assert.strictEqual(rpc.found, false);
-        assert.deepStrictEqual(proposed(options), []);
+        assert.strictEqual(rpc.found, true);
+        assert.deepStrictEqual(proposed(options), ['hm-rpc:openccu-lite']);
         // one probe for the address in this scan, whoever asked first
         assert.deepStrictEqual(network.probe, [{ address: IP, timeout: 1500 }]);
     });
@@ -572,10 +487,10 @@ describe('hm-rega and hm-rpc, in any order', () => {
         const options = freshOptions(classicInstances());
 
         const rpc = await detect(hmRpc, options);
-        assert.strictEqual(rpc.found, false);
+        assert.strictEqual(rpc.found, true);
         const rega = await detect(hmRega, options);
         assert.strictEqual(rega.found, false);
-        assert.deepStrictEqual(proposed(options), []);
+        assert.deepStrictEqual(proposed(options), ['hm-rpc:openccu-lite']);
         assert.deepStrictEqual(network.probe, [{ address: IP, timeout: 1500 }]);
     });
 
@@ -586,18 +501,18 @@ describe('hm-rega and hm-rpc, in any order', () => {
         const [rega, rpc] = await Promise.all([detect(hmRega, options), detect(hmRpc, options)]);
         assert.strictEqual(rega.found, false);
         assert.strictEqual(rega.calls, 1);
-        assert.strictEqual(rpc.found, false);
-        assert.deepStrictEqual(proposed(options), []);
+        assert.strictEqual(rpc.found, true);
+        assert.deepStrictEqual(proposed(options), ['hm-rpc:openccu-lite']);
         assert.strictEqual(network.probe.length, 1);
     });
 
-    it('proposes openccu-lite instances and no hm-rega when hm-rega runs first on a fresh installation', async () => {
+    it('proposes the openccu-lite instance and no hm-rega when hm-rega runs first on a fresh installation', async () => {
         network = stubNetwork({ open: [2001, 2010, 8181], system: liteSystem(named) });
         const options = freshOptions();
 
         await detect(hmRega, options);
         await detect(hmRpc, options);
-        assert.deepStrictEqual(proposed(options), ['hm-rpc:openccu-lite', 'hm-rpc:openccu-lite']);
+        assert.deepStrictEqual(proposed(options), ['hm-rpc:openccu-lite']);
     });
 
     for (const order of ['hm-rega first', 'hm-rpc first']) {

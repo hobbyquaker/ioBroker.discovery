@@ -13,8 +13,6 @@ interface Daemon {
     comment: string;
     /** `false`: an open port is enough, the process is not asked for its version */
     getVersion: boolean;
-    /** The interface's name on openccu-lite, where it has one */
-    liteInterface?: string;
 }
 
 const DAEMONS: Daemon[] = [
@@ -26,7 +24,6 @@ const DAEMONS: Daemon[] = [
         title: 'HomeMatic hs485d',
         comment: 'hs485d',
         getVersion: true,
-        liteInterface: 'BidCos-Wired',
     },
     {
         port: 2001,
@@ -36,7 +33,6 @@ const DAEMONS: Daemon[] = [
         title: 'HomeMatic Wireless',
         comment: 'Wireless RF',
         getVersion: true,
-        liteInterface: 'BidCos-RF',
     },
     {
         port: 8701,
@@ -55,27 +51,11 @@ const DAEMONS: Daemon[] = [
         title: 'HomeMatic HMIP',
         comment: 'HMIP',
         getVersion: true,
-        liteInterface: 'HmIP-RF',
     },
 ];
 
 /** The `daemon` of an hm-rpc instance in openccu-lite mode */
 export const LITE_DAEMON = 'openccu-lite';
-
-/** The classic `daemon` that reaches the same interface - an instance of it covers the interface too */
-const CLASSIC_DAEMON: Record<string, string> = {
-    'BidCos-Wired': 'hs485d',
-    'BidCos-RF': 'rfd',
-    'HmIP-RF': 'HMIP',
-    VirtualDevices: 'virtual-devices',
-};
-
-/**
- * The interfaces proposed for an openccu-lite system that does not name them in its version
- * answer (an older system) and whose classic ports did not show them either: these two are what its
- * usual radio modules run. The user unticks what the system lacks.
- */
-export const DEFAULT_LITE_INTERFACES = ['HmIP-RF', 'BidCos-RF'];
 
 /**
  * Budget of the openccu-lite probe, the redirect to HTTPS included. A system answers within
@@ -192,20 +172,17 @@ function proposeClassic(
 }
 
 /**
- * The proposals for an openccu-lite system: one hm-rpc instance per interface in openccu-lite
- * mode, never a classic one - those would need `init`, which the system does not forward.
- *
- * The interfaces are the ones the version answer names; for a system whose answer does not name
- * them, the ones whose classic port answered (classic RPC switched on without a password), else
- * `DEFAULT_LITE_INTERFACES`. The token cannot be discovered: the user pairs the new instance in
- * its settings.
+ * The proposal for an openccu-lite system: one hm-rpc instance in openccu-lite mode, which serves every
+ * interface the system runs - never a classic one, those would need `init`, which the system does not
+ * forward. Nothing is proposed when an instance in openccu-lite mode for the system exists already, or
+ * when the system names no interface at all. The token cannot be discovered: the user pairs the new
+ * instance in its settings.
  */
 function proposeLite(
     ip: string,
     device: DiscoveryDevice,
     name: string,
     system: openccuLite.OpenccuLiteSystem,
-    open: Daemon[],
     options: DetectOptions,
 ): boolean {
     const version = openccuLite.rpcApiVersion(system.info);
@@ -214,48 +191,37 @@ function proposeLite(
         return false;
     }
 
+    // the interfaces the version answer names; an older system does not name them
     const named = openccuLite.interfacesOf(system.info);
-    const seen = DAEMONS.filter(d => d.liteInterface && open.includes(d)).map(d => d.liteInterface as string);
-    const interfaces = named ?? (seen.length ? seen : DEFAULT_LITE_INTERFACES);
-    const text = openccuLite.pairingAllowed(system.info) ? PAIRING_HINT : NO_PAIRING_HINT;
-
-    let someFound = false;
-    for (const iface of interfaces) {
-        const classic = CLASSIC_DAEMON[iface];
-        const instance = tools.findInstance(
-            options,
-            'hm-rpc',
-            obj =>
-                isThisHost(obj, ip, device) &&
-                (obj.native.daemon === LITE_DAEMON
-                    ? obj.native.liteInterface === iface
-                    : !!classic && obj.native.daemon === classic),
-        );
-        if (instance) {
-            continue;
-        }
-        options.newInstances.push({
-            _id: tools.getNextInstanceID('hm-rpc', options),
-            common: {
-                name: 'hm-rpc',
-                title: `HomeMatic ${iface} (openccu-lite, ${name})`,
-            },
-            native: {
-                daemon: LITE_DAEMON,
-                homematicAddress: ip,
-                homematicPort: system.port,
-                useHttps: system.https,
-                type: 'xml',
-                liteInterface: iface,
-            },
-            comment: {
-                add: [`${iface} (openccu-lite, ${name})`],
-                text,
-            },
-        });
-        someFound = true;
+    if (named?.length === 0) {
+        options.log.debug(`openccu-lite at ${ip} runs no interface`);
+        return false;
     }
-    return someFound;
+    if (
+        tools.findInstance(options, 'hm-rpc', obj => isThisHost(obj, ip, device) && obj.native.daemon === LITE_DAEMON)
+    ) {
+        return false;
+    }
+
+    options.newInstances.push({
+        _id: tools.getNextInstanceID('hm-rpc', options),
+        common: {
+            name: 'hm-rpc',
+            title: `HomeMatic openccu-lite (${name})`,
+        },
+        native: {
+            daemon: LITE_DAEMON,
+            homematicAddress: ip,
+            homematicPort: system.port,
+            useHttps: system.https,
+            type: 'xml',
+        },
+        comment: {
+            add: [named ? `${named.join(', ')} (openccu-lite, ${name})` : `openccu-lite (${name})`],
+            text: openccuLite.pairingAllowed(system.info) ? PAIRING_HINT : NO_PAIRING_HINT,
+        },
+    });
+    return true;
 }
 
 export function detect(ip: string, device: DiscoveryDevice, options: DetectOptions, callback: DetectCallback): void {
@@ -272,7 +238,7 @@ export function detect(ip: string, device: DiscoveryDevice, options: DetectOptio
             return;
         }
         const found = system
-            ? proposeLite(ip, device, name, system, open, options)
+            ? proposeLite(ip, device, name, system, options)
             : proposeClassic(ip, device, name, open, options);
         callback(null, found, ip);
     };
